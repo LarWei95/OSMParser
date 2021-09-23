@@ -1,0 +1,4 @@
+.project
+.pydevproject
+control/__pycache__/*
+main/__pycache__/*
