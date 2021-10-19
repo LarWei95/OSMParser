@@ -5,6 +5,7 @@ Created on 24.09.2021
 '''
 import numpy as np
 from xml.etree import ElementTree
+from collections import defaultdict
 
 class OSMObject ():
     def __init__ (self, objid, tags):
@@ -25,6 +26,36 @@ class OSMObject ():
             return False
         else:
             return self.__tags[key] == value
+        
+    def has_tag_value_in (self, key, values):
+        if not self.has_tag(key):
+            return False
+        else:
+            return self.__tags[key] in values
+        
+    @classmethod
+    def filter_by_tag (cls, object_dict, tag):
+        return {
+                obj_id : object_dict[obj_id]
+                for obj_id in object_dict
+                if object_dict[obj_id].has_tag(tag)
+            }
+        
+    @classmethod
+    def filter_by_tag_value (cls, object_dict, tag, value):
+        return {
+                obj_id : object_dict[obj_id]
+                for obj_id in object_dict
+                if object_dict[obj_id].has_tag_value(tag, value)
+            }
+        
+    @classmethod
+    def filter_by_tag_value_in (cls, object_dict, tag, values):
+        return {
+                obj_id : object_dict[obj_id]
+                for obj_id in object_dict
+                if object_dict[obj_id].has_tag_value_in(tag, values)
+            }
     
 class OSMNode (OSMObject):
     def __init__ (self, objid, tags, lat, lon):
@@ -53,12 +84,39 @@ class OSMWay (OSMObject):
         
         for i in range(len(self.__noderefs)):
             ref = self.__noderefs[i]
-            ref = node_dict[ref]
             
-            coords[i, 0] = ref.lat()
-            coords[i, 1] = ref.lon()
-            
+            if ref in node_dict:
+                ref = node_dict[ref]
+                
+                coords[i, 0] = ref.lat()
+                coords[i, 1] = ref.lon()
+            else:
+                i -= 1
+                break
+        
+        if i != 0:
+            coords = coords[:i+1]
+        else:
+            coords = None
+        
         return coords
+    
+    def adjacency_list (self, symmetric=True):
+        adjlist = defaultdict(set)
+        
+        node_count = len(self.__noderefs)
+        
+        for i in range(1, node_count):
+            last = self.__noderefs[i-1]
+            current = self.__noderefs[i]
+            
+            adjlist[last].add(current)
+            
+            if symmetric:
+                adjlist[current].add(last)
+        
+        return adjlist
+        
     
 class OSMMember ():
     def __init__ (self, member_type, ref, role):
@@ -101,47 +159,85 @@ class OSMCollections ():
         return self.__relations
     
     def nodes_with_tag (self, key):
-        return {
-                node_id : self.__nodes[node_id]
-                for node_id in self.__nodes
-                if self.__nodes[node_id].has_tag(key)
-            }
+        return OSMObject.filter_by_tag(self.__nodes, key)
         
     def nodes_with_tag_value (self, key, value):
-        return {
-                node_id : self.__nodes[node_id]
-                for node_id in self.__nodes
-                if self.__nodes[node_id].has_tag_value(key, value)
-            }
+        return OSMObject.filter_by_tag_value(self.__nodes, key, value)
+    
+    def nodes_with_tag_value_in (self, key, values):
+        return OSMObject.filter_by_tag_value_in(self.__nodes, key, values)
         
     def ways_with_tag (self, key):
-        return {
-                way_id : self.__ways[way_id]
-                for way_id in self.__ways
-                if self.__ways[way_id].has_tag(key)
-            }
+        return OSMObject.filter_by_tag(self.__ways, key)
         
     def ways_with_tag_value (self, key, value):
-        return {
-                way_id : self.__ways[way_id]
-                for way_id in self.__ways
-                if self.__ways[way_id].has_tag_value(key, value)
-            }
-        
+        return OSMObject.filter_by_tag_value(self.__ways, key, value)
+    
+    def ways_with_tag_value_in (self, key, values):
+        return OSMObject.filter_by_tag_value_in(self.__ways, key, values)
+    
     def relations_with_tag (self, key):
-        return {
-                relation_id : self.__relations[relation_id]
-                for relation_id in self.__relations
-                if self.__relations[relation_id].has_tag(key)
-            }
+        return OSMObject.filter_by_tag(self.__relations, key)
         
     def relations_with_tag_value (self, key, value):
-        return {
-                relation_id : self.__relations[relation_id]
-                for relation_id in self.__relations
-                if self.__relations[relation_id].has_tag_value(key, value)
+        return OSMObject.filter_by_tag_value(self.__relations, key, value)
+    
+    def relations_with_tag_value_in (self, key, values):
+        return OSMObject.filter_by_tag_value_in(self.__relations, key, values)
+        
+    def nodes_with_coordinates (self, nodes=None):
+        if nodes is None:
+            nodes = self.__nodes
+            
+        coords = {
+                node_id : np.array([nodes[node_id].lat(), nodes[node_id].lon()])
+                for node_id in nodes
+            }
+        return coords
+        
+    def ways_with_coordinates (self, ways=None):
+        if ways is None:
+            ways = self.__ways
+        
+        coords = {
+                way_id : ways[way_id].coordinates(self.__nodes)
+                for way_id in ways
+            }
+        coords = {
+                way_id : coords[way_id]
+                for way_id in coords
+                if coords[way_id] is not None
             }
         
+        return coords
+    
+    def ways_to_graph (self, ways=None, symmetric=True):
+        if ways is None:
+            ways = self.__ways
+        
+        all_noderefs = set()
+        adjlist = defaultdict(set)
+        
+        for way_id in ways:
+            way = ways[way_id]
+            
+            c_adjlist = way.adjacency_list(symmetric)
+            
+            for node_id in c_adjlist:
+                if node_id in self.__nodes:
+                    all_noderefs.add(node_id)
+                    adjs = c_adjlist[node_id]
+                    
+                    for adj in adjs:
+                        if adj in self.__nodes:
+                            all_noderefs.add(adj)
+                            adjlist[node_id].add(adj)
+            
+        all_noderefs = {
+                x : np.array([self.__nodes[x].lat(), self.__nodes[x].lon()])
+                for x in all_noderefs
+            }
+        return all_noderefs, adjlist
 
 class OSMParser():
     @classmethod
@@ -159,8 +255,8 @@ class OSMParser():
         
         for node in root.findall("node"):
             node_id = node.get("id")
-            lat = node.get("lat")
-            lon = node.get("lon")
+            lat = np.round(float(node.get("lat")), 6)
+            lon = np.round(float(node.get("lon")), 6)
             
             tags = cls._parse_tags(node)
                 
